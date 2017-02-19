@@ -42,6 +42,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.TreeSet;
+import java.util.concurrent.*;
 
 /**
  * Collection to which many records can be added.  After all records are added, the collection can be
@@ -111,8 +112,8 @@ public class SortingCollection<T> implements Iterable<T> {
      */
     private final Comparator<T> comparator;
     private final int maxRecordsInRam;
-    private int numRecordsInRam = 0;
-    private T[] ramRecords;
+    private volatile int numRecordsInRam = 0;
+    private volatile T[] ramRecords;
     private boolean iterationStarted = false;
     private boolean doneAdding = false;
 
@@ -129,6 +130,10 @@ public class SortingCollection<T> implements Iterable<T> {
     private boolean destructiveIteration = true;
 
     private TempStreamFactory tempStreamFactory = new TempStreamFactory();
+
+    private Class<T> componentType;
+    private ExecutorService executor;
+    private BlockingQueue<T[]> queueToSpill;
 
     /**
      * Prepare to accumulate records to be sorted
@@ -151,11 +156,15 @@ public class SortingCollection<T> implements Iterable<T> {
         this.tmpDirs = tmpDir;
         this.codec = codec;
         this.comparator = comparator;
-        this.maxRecordsInRam = maxRecordsInRam;
-        this.ramRecords = (T[])Array.newInstance(componentType, maxRecordsInRam);
+        this.maxRecordsInRam = maxRecordsInRam/2;
+        this.ramRecords = (T[])Array.newInstance(componentType, this.maxRecordsInRam);
+
+        this.componentType = componentType;
+        this.executor = Executors.newCachedThreadPool();
+        this.queueToSpill = new LinkedBlockingQueue<>();
     }
 
-    public void add(final T rec) {
+    public synchronized void add(final T rec) {
         if (doneAdding) {
             throw new IllegalStateException("Cannot add after calling doneAdding()");
         }
@@ -163,7 +172,14 @@ public class SortingCollection<T> implements Iterable<T> {
             throw new IllegalStateException("Cannot add after calling iterator()");
         }
         if (numRecordsInRam == maxRecordsInRam) {
-            spillToDisk();
+            try {
+                queueToSpill.put(ramRecords);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            executor.submit(this::spillToDisk);
+            ramRecords = (T[])Array.newInstance(componentType, this.maxRecordsInRam);
+            numRecordsInRam = 0;
         }
         ramRecords[numRecordsInRam++] = rec;
     }
@@ -188,7 +204,19 @@ public class SortingCollection<T> implements Iterable<T> {
         }
 
         if (this.numRecordsInRam > 0) {
-            spillToDisk();
+            try {
+                queueToSpill.put(ramRecords);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            executor.submit(this::spillToDisk);
+        }
+
+        executor.shutdown();
+        try {
+            executor.awaitTermination(1, TimeUnit.DAYS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
         }
 
         // Facilitate GC
@@ -215,17 +243,26 @@ public class SortingCollection<T> implements Iterable<T> {
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */
     private void spillToDisk() {
+        int numRecords = queueToSpill.size();
         try {
-            Arrays.sort(this.ramRecords, 0, this.numRecordsInRam, this.comparator);
+            T[] arrayToSpill = null;
+            try {
+                arrayToSpill = queueToSpill.take();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            if (arrayToSpill != null) {
+                Arrays.sort(arrayToSpill, 0, numRecords, this.comparator);
+            }
             final File f = newTempFile();
             OutputStream os = null;
             try {
                 os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);
                 this.codec.setOutputStream(os);
-                for (int i = 0; i < this.numRecordsInRam; ++i) {
-                    this.codec.encode(ramRecords[i]);
+                for (int i = 0; i < numRecords; ++i) {
+                    this.codec.encode(arrayToSpill[i]);
                     // Facilitate GC
-                    this.ramRecords[i] = null;
+                    arrayToSpill[i] = null;
                 }
 
                 os.flush();
@@ -238,7 +275,7 @@ public class SortingCollection<T> implements Iterable<T> {
                 }
             }
 
-            this.numRecordsInRam = 0;
+//            this.numRecordsInRam = 0;
             this.files.add(f);
 
         }
