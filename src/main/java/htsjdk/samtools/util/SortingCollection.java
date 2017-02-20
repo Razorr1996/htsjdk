@@ -160,8 +160,8 @@ public class SortingCollection<T> implements Iterable<T> {
         this.ramRecords = (T[])Array.newInstance(componentType, this.maxRecordsInRam);
 
         this.componentType = componentType;
-        this.executor = Executors.newCachedThreadPool();
-        this.queueToSpill = new LinkedBlockingQueue<>();
+        executor = Executors.newCachedThreadPool();
+        queueToSpill = new LinkedBlockingQueue<>();
     }
 
     public synchronized void add(final T rec) {
@@ -178,7 +178,7 @@ public class SortingCollection<T> implements Iterable<T> {
                 e.printStackTrace();
             }
             executor.submit(this::spillToDisk);
-            ramRecords = (T[])Array.newInstance(componentType, this.maxRecordsInRam);
+            ramRecords = (T[])Array.newInstance(componentType, maxRecordsInRam);
             numRecordsInRam = 0;
         }
         ramRecords[numRecordsInRam++] = rec;
@@ -243,7 +243,11 @@ public class SortingCollection<T> implements Iterable<T> {
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */
     private void spillToDisk() {
-        int numRecords = queueToSpill.size();
+        int numRecords;
+        if (doneAdding)
+            numRecords = this.numRecordsInRam;
+        else
+            numRecords = maxRecordsInRam;
         try {
             T[] arrayToSpill = null;
             try {
