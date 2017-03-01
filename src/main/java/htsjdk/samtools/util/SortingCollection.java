@@ -112,8 +112,8 @@ public class SortingCollection<T> implements Iterable<T> {
      */
     private final Comparator<T> comparator;
     private final int maxRecordsInRam;
-    private volatile int numRecordsInRam = 0;
-    private volatile T[] ramRecords;
+    private int numRecordsInRam = 0;
+    private T[] ramRecords;
     private boolean iterationStarted = false;
     private boolean doneAdding = false;
 
@@ -244,10 +244,7 @@ public class SortingCollection<T> implements Iterable<T> {
      */
     private void spillToDisk() {
         int numRecords;
-        if (doneAdding)
-            numRecords = this.numRecordsInRam;
-        else
-            numRecords = maxRecordsInRam;
+        numRecords = doneAdding ? this.numRecordsInRam : maxRecordsInRam;
         try {
             T[] arrayToSpill = null;
             try {
