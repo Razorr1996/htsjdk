@@ -28,6 +28,12 @@ import htsjdk.samtools.util.CloseableIterator;
 
 import java.io.Closeable;
 import java.text.MessageFormat;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingDeque;
 
 /**
  * Describes functionality for objects that produce {@link SAMRecord}s and associated information.
@@ -474,12 +480,12 @@ public interface SamReader extends Iterable<SAMRecord>, Closeable {
 
         @Override
         public SAMRecordIterator iterator() {
-            return new AssertingIterator(p.getIterator());
+            return Defaults.USE_ASYNC_ITERATOR_FOR_SAMREADER ? new AsyncAssertingIterator(p.getIterator()): new AssertingIterator(p.getIterator());
         }
 
         @Override
         public SAMRecordIterator iterator(final SAMFileSpan chunks) {
-            return new AssertingIterator(p.getIterator(chunks));
+            return Defaults.USE_ASYNC_ITERATOR_FOR_SAMREADER ? new AsyncAssertingIterator(p.getIterator(chunks)): new AssertingIterator(p.getIterator(chunks));
         }
 
         @Override
@@ -593,9 +599,96 @@ public interface SamReader extends Iterable<SAMRecord>, Closeable {
 
         public void close() { wrappedIterator.close(); }
 
-        public boolean hasNext() { return wrappedIterator.hasNext(); }
+        public boolean hasNext() {
+            return wrappedIterator.hasNext();
+        }
 
         public void remove() { wrappedIterator.remove(); }
+    }
+
+    static class AsyncAssertingIterator implements SAMRecordIterator{
+
+        private static AssertingIterator wrappedAssertingIterator;
+
+        private static final int PACK_SIZE = 10000;
+        private static final int MAX_THREADS_COUNT = 100;
+
+        private List<SAMRecord> pack = new ArrayList<>(PACK_SIZE);
+        private int index = 0;
+
+        private BlockingQueue<ArrayList<SAMRecord>> queue = new LinkedBlockingDeque<>();
+        private ExecutorService service = Executors.newCachedThreadPool();
+
+        public AsyncAssertingIterator(final CloseableIterator<SAMRecord> iterator){
+            wrappedAssertingIterator = new AssertingIterator(iterator);
+
+            service.submit(() -> {
+                try {
+                    queue.put(makeNewPack(wrappedAssertingIterator, PACK_SIZE));
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            });
+        }
+
+        static AssertingIterator of(final CloseableIterator<SAMRecord> iterator) {
+            return AssertingIterator.of(iterator);
+        }
+
+        public SAMRecordIterator assertSorted(final SAMFileHeader.SortOrder sortOrder) {
+            return wrappedAssertingIterator.assertSorted(sortOrder);
+        }
+
+        private ArrayList<SAMRecord> makeNewPack(CloseableIterator<SAMRecord> iterator, int size){
+            ArrayList<SAMRecord> newPack = new ArrayList<>(size);
+
+            for (int i = 0; i < size; i++){
+                if (!iterator.hasNext())
+                    return newPack;
+                newPack.add(iterator.next());
+            }
+
+            return newPack;
+        }
+
+        @Override
+        public SAMRecord next() {
+            if (index == pack.size())
+                if (hasNext())
+                    try {
+                        pack = queue.take();
+                        index = 0;
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                else
+                    return null;
+
+            if (index == 0 && wrappedAssertingIterator.hasNext()) {
+                service.submit(() -> {
+                    try {
+                        queue.put(makeNewPack(wrappedAssertingIterator, PACK_SIZE));
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                });
+            }
+
+            return pack.get(index++);
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (!wrappedAssertingIterator.hasNext() && index == pack.size() && queue.size() == 0){
+                service.shutdownNow();
+                return false;
+            } else return true;
+        }
+
+        @Override
+        public void close() {
+
+        }
     }
 
     /**

@@ -15,7 +15,10 @@ import java.util.TreeMap;
  */
 public class Defaults {
     private static Log log = Log.getInstance(Defaults.class);
-    
+
+    /** Should asynchronous iterator be used for SamReader? Default = true. */
+    public static boolean USE_ASYNC_ITERATOR_FOR_SAMREADER;
+
     /** Should BAM index files be created when writing out coordinate sorted BAM files?  Default = false. */
     public static final boolean CREATE_INDEX;
 
@@ -86,6 +89,7 @@ public class Defaults {
 
 
     static {
+        USE_ASYNC_ITERATOR_FOR_SAMREADER = getBooleanProperty("use_async_iterator_for_samreader", true);
         CREATE_INDEX = getBooleanProperty("create_index", false);
         CREATE_MD5 = getBooleanProperty("create_md5", false);
         USE_ASYNC_IO_READ_FOR_SAMTOOLS = getBooleanProperty("use_async_io_read_samtools", false);
@@ -113,6 +117,7 @@ public class Defaults {
      */
     public static SortedMap<String, Object> allDefaults(){
         final SortedMap<String, Object> result = new TreeMap<>();
+        result.put("USE_ASYNC_ITERATOR_FOR_SAMREADER", USE_ASYNC_ITERATOR_FOR_SAMREADER);
         result.put("CREATE_INDEX", CREATE_INDEX);
         result.put("CREATE_MD5", CREATE_MD5);
         result.put("USE_ASYNC_IO_READ_FOR_SAMTOOLS", USE_ASYNC_IO_READ_FOR_SAMTOOLS);
@@ -129,7 +134,7 @@ public class Defaults {
         return Collections.unmodifiableSortedMap(result);
     }
 
-    /** Gets a string system property, prefixed with "samjdk." using the default 
+    /** Gets a string system property, prefixed with "samjdk." using the default
      * if the property does not exist or if the java.security manager raises an exception for
      * applications started with  -Djava.security.manager  . */
     private static String getStringProperty(final String name, final String def) {
